@@ -1,36 +1,51 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Allo Inventory Reservation System
 
-## Getting Started
+Live demo: https://allo-inventory-bfuz-m6y5oj89p-yuktha-sris-projects-c2ecee16.vercel.app
 
-First, run the development server:
+## What this is
+An inventory reservation system for multi-warehouse retail. When a customer 
+proceeds to checkout, units are held for 10 minutes. If payment succeeds, 
+the reservation is confirmed and stock is permanently decremented. If it 
+expires or is cancelled, stock is released back.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## How to run locally
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+1. Clone the repo: `git clone https://github.com/yukthasriseelam-hash/allo-inventory`
+2. `cd allo-inventory`
+3. `npm install`
+4. Create `.env` file with your DATABASE_URL, UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN, CRON_SECRET
+5. `npx prisma migrate dev`
+6. `npx prisma db seed`
+7. `npm run dev` — open http://localhost:3000
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How concurrency is handled
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The reservation endpoint uses an atomic SQL UPDATE with a conditional check:
 
-## Learn More
+The query increments reservedUnits only if enough stock is available.
+If two requests arrive simultaneously for the last unit, the database 
+serializes the writes — exactly one UPDATE succeeds and proceeds. 
+The other gets 0 rows affected and returns a 409. No application-level 
+locks needed.
 
-To learn more about Next.js, take a look at the following resources:
+## How expiry works in production
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Two mechanisms work together:
+- Lazy cleanup: The confirm endpoint checks expiresAt on read. If expired, 
+  it atomically releases the hold and returns 410 to the user.
+- Cron cleanup: A Vercel Cron job runs daily and batch-releases all PENDING 
+  reservations past their expiresAt.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Idempotency (bonus)
 
-## Deploy on Vercel
+If a client sends an Idempotency-Key header, the server checks Redis for 
+a cached response first. On success, the response is stored in Redis for 
+24 hours. Retries with the same key get the original response without 
+creating a duplicate reservation.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Trade-offs and what I'd improve with more time
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- No authentication — reservations aren't tied to user accounts
+- Cron runs daily on free Vercel plan — lazy cleanup handles expiry in the meantime
+- No real-time stock updates on product list after reserving
+- UI is functional but minimal
